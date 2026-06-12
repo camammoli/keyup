@@ -12,6 +12,7 @@ class Config:
     bm_port: int
     talkgroup: int
     web_port: int
+    frequency: int = 438800000
 
     @property
     def repeater_id(self) -> int:
@@ -32,6 +33,7 @@ def load(path: str = 'config.yml') -> Config:
         bm_password = d['bm_password'],
         bm_server = d['bm_server'],
         bm_port   = int(d.get('bm_port', 62031)),
-        talkgroup = int(d.get('talkgroup', 91)),
-        web_port  = int(d.get('web_port', 8080)),
+        talkgroup  = int(d.get('talkgroup', 91)),
+        web_port   = int(d.get('web_port', 8080)),
+        frequency  = int(d.get('frequency', 438800000)),
     )

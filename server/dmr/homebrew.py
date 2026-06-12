@@ -92,10 +92,12 @@ class DMRFrame:
 
 
 class HomebrewState:
-    DISCONNECTED = 'disconnected'
-    CONNECTING   = 'connecting'
-    CONNECTED    = 'connected'
-    CLOSING      = 'closing'
+    DISCONNECTED   = 'disconnected'
+    CONNECTING     = 'connecting'      # sent RPTL, waiting RPTACK #1
+    AUTHENTICATING = 'authenticating'  # sent RPTK, waiting RPTACK #2
+    CONFIGURING    = 'configuring'     # sent RPTC, waiting RPTACK #3
+    CONNECTED      = 'connected'
+    CLOSING        = 'closing'
 
 
 class HomebrewProtocol(asyncio.DatagramProtocol):
@@ -164,21 +166,19 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
     def datagram_received(self, data: bytes, addr):
         if len(data) < 4:
             return
-        tag = data[:4]
+        log.debug('RX %d bytes: %s', len(data), data.hex())
 
-        if tag == b'RPTA':
+        if data[:6] == b'RPTACK':
             self._handle_rptack(data)
-        elif tag == b'MSTA':
-            self._handle_mstack(data)
-        elif tag == b'MSTN':
-            log.error('Login rejected by BrandMeister')
+        elif data[:6] == b'MSTNAK':
+            log.error('Login rejected by BrandMeister (MSTNAK)')
             self._set_state(HomebrewState.DISCONNECTED)
-        elif tag == b'MSTP':
+        elif data[:7] == b'MSTPONG':
             self._handle_pong(data)
-        elif tag == b'DMRD':
+        elif data[:4] == b'DMRD':
             self._handle_dmrd(data)
         else:
-            log.debug('Unknown packet: %s', tag)
+            log.debug('Unknown packet: %s', data[:6])
 
     def error_received(self, exc):
         log.error('UDP error: %s', exc)
@@ -193,53 +193,51 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
         self._send(b'RPTL' + self.cfg.repeater_id_bytes)
 
     def _handle_rptack(self, data: bytes):
+        # Three-phase handshake: RPTL → RPTACK(salt) → RPTK → RPTACK → RPTC → RPTACK → CONNECTED
         if self.state == HomebrewState.CONNECTING:
-            # First ACK: contains the 4-byte salt for challenge-response
             self._salt = data[6:10]
             log.debug('Got salt: %s', self._salt.hex())
+            self._set_state(HomebrewState.AUTHENTICATING)
             self._send_key()
-        elif self.state == HomebrewState.CONNECTED:
-            # ACK after config — all good
-            log.debug('Config acknowledged')
+        elif self.state == HomebrewState.AUTHENTICATING:
+            log.debug('Auth accepted, sending config')
+            self._set_state(HomebrewState.CONFIGURING)
+            self._send_config()
+        elif self.state == HomebrewState.CONFIGURING:
+            log.info('Config accepted — connected to BrandMeister')
+            self._set_state(HomebrewState.CONNECTED)
+            self._ping_task = asyncio.ensure_future(self._ping_loop())
 
     def _send_key(self):
-        digest = hashlib.sha256(self._salt + self.cfg.bm_password.encode()).hexdigest()
-        self._send(b'RPTK' + self.cfg.repeater_id_bytes + digest.encode())
-
-    def _handle_mstack(self, data: bytes):
-        log.info('Login accepted by BrandMeister')
-        self._set_state(HomebrewState.CONNECTED)
-        self._send_config()
-        self._ping_task = asyncio.ensure_future(self._ping_loop())
+        # RPTK = "RPTK" (4) + repeater_id (4) + SHA256_raw_bytes (32) = 40 bytes total
+        digest = hashlib.sha256(self._salt + self.cfg.bm_password.encode()).digest()
+        self._send(b'RPTK' + self.cfg.repeater_id_bytes + digest)
 
     def _send_config(self):
-        # RPTC config packet: callsign + frequency + TX power + color code + lat/lon + height + location + desc + url + software + package
-        cs = self.cfg.callsign.ljust(8).encode()
-        payload = (
-            b'RPTC' +
-            self.cfg.repeater_id_bytes +
-            cs +
-            b'\x00' * 4 +   # RX freq (not used for softclient)
-            b'\x00' * 4 +   # TX freq
-            b'\x00' * 4 +   # TX power
-            b'\x01' +       # color code 1
-            b'\x00' * 8 +   # lat
-            b'\x00' * 9 +   # lon
-            b'\x00' * 3 +   # height
-            b'KeyUp   ' +   # location (8 bytes)
-            b'KeyUp web client' + b'\x00' * (20 - 16) +   # description (20 bytes)
-            b'https://github.com/camammoli/keyup' + b'\x00' * (124 - 35) +  # URL
-            b'KeyUp/1.0' + b'\x00' * (40 - 9) +           # software (40 bytes)
-            b'MMDVM_MMDVM_HS_Hat' + b'\x00' * (40 - 18)  # package (40 bytes)
+        # RPTC = "RPTC" (4) + repeater_id (4) + ASCII config (294 bytes) = 302 bytes
+        # Format mirrors DroidStar / MMDVM Homebrew spec
+        freq = self.cfg.frequency
+        cfg_str = '%-8.8s%09u%09u%02u%02u%8.8s%9.9s%03d%-20.20s%-19.19s%c%-124.124s%-40.40s%-40.40s' % (
+            self.cfg.callsign,
+            freq, freq,                             # RX/TX freq
+            1, 1,                                   # TX power, color code
+            '0.000000', '00.000000',                # lat, lon
+            0,                                      # height
+            'KeyUp',                                # location
+            'KeyUp web DMR client',                 # description
+            '4',                                    # hotspot type (DroidStar standard)
+            'https://github.com/camammoli/keyup',   # URL
+            '20200922',                             # software ID (matches DroidStar default)
+            'MMDVM_MMDVM_HS_Hat',                   # package ID
         )
-        self._send(payload)
+        self._send(b'RPTC' + self.cfg.repeater_id_bytes + cfg_str.encode())
 
     # ── Ping / keepalive ──────────────────────────────────────────────────────
 
     async def _ping_loop(self):
         while self.state == HomebrewState.CONNECTED:
             await asyncio.sleep(PING_INTERVAL)
-            self._send(b'RPTP' + b'MMDVM' + self.cfg.repeater_id_bytes)
+            self._send(b'RPTPING' + self.cfg.repeater_id_bytes)
             self._last_ping = time.monotonic()
             self._missed_pings += 1
             if self._missed_pings >= MAX_MISSED_PINGS:
@@ -277,6 +275,7 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
 
     def _send(self, data: bytes):
         if self.transport:
+            log.debug('TX %d bytes tag=%s', len(data), data[:7])
             self.transport.sendto(data)
 
     def _set_state(self, state: str):
@@ -286,5 +285,5 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
             self.on_state(state)
 
     async def _wait_connected(self):
-        while self.state != HomebrewState.CONNECTED:
+        while self.state not in (HomebrewState.CONNECTED, HomebrewState.DISCONNECTED):
             await asyncio.sleep(0.1)
