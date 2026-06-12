@@ -6,6 +6,7 @@ Starts the Homebrew DMR connection and the FastAPI web server.
 import asyncio
 import logging
 import os
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI
@@ -24,26 +25,23 @@ log = logging.getLogger('keyup')
 
 
 def build_app(cfg) -> FastAPI:
-    app = FastAPI(title='KeyUp', version='1.0')
-
     homebrew = HomebrewProtocol(cfg)
     bridge   = AudioBridge(cfg, homebrew)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        asyncio.ensure_future(homebrew.connect())
+        yield
+        await homebrew.disconnect()
+        await bridge.close()
+
+    app = FastAPI(title='KeyUp', version='1.0', lifespan=lifespan)
 
     routes.init(homebrew, bridge)
     app.include_router(routes.router)
 
-    # Serve static assets (CSS, JS) — must come after routes
     web_dir = os.path.join(os.path.dirname(__file__), '..', 'web')
     app.mount('/static', StaticFiles(directory=web_dir), name='static')
-
-    @app.on_event('startup')
-    async def startup():
-        asyncio.ensure_future(homebrew.connect())
-
-    @app.on_event('shutdown')
-    async def shutdown():
-        await homebrew.disconnect()
-        await bridge.close()
 
     return app
 
