@@ -77,7 +77,8 @@ async function commitTg() {
 
 tgBadge.addEventListener('click', openTgEdit);
 tgInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') { tgInput.blur(); }
+  e.stopPropagation();  // prevent Space from reaching the PTT document handler
+  if (e.key === 'Enter')  tgInput.blur();
   if (e.key === 'Escape') { tgInput.classList.add('hidden'); tgBadge.classList.remove('hidden'); }
 });
 tgInput.addEventListener('blur', commitTg);

@@ -172,8 +172,8 @@ def _on_dmr_frame(frame):
         if start:
             asyncio.ensure_future(_handle_call_end(frame, time.time() - start))
 
-    # Forward audio to WebRTC bridge
-    if _bridge:
+    # Forward audio to WebRTC bridge — skip DATA_SYNC (voice header, no AMBE)
+    if _bridge and frame.frame_type != FrameType.DATA_SYNC:
         _bridge.push_dmr_frame(frame)
 
     asyncio.ensure_future(_broadcast({
