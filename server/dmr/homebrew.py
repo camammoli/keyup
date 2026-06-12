@@ -207,6 +207,25 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
             log.info('Config accepted — connected to BrandMeister')
             self._set_state(HomebrewState.CONNECTED)
             self._ping_task = asyncio.ensure_future(self._ping_loop())
+            self._send_rpto()
+
+    def subscribe_tg(self, talkgroup: int):
+        """Re-subscribe to a new talkgroup without reconnecting."""
+        self.cfg.talkgroup = talkgroup
+        if self.state == HomebrewState.CONNECTED:
+            self._send_rpto()
+
+    def _send_rpto(self):
+        # RPTO tells BrandMeister which TG to push traffic for.
+        # Without this, BM routes nothing to a freshly-connected hotspot.
+        tg  = self.cfg.talkgroup
+        freq = self.cfg.frequency
+        opts = (
+            f'StartPause=4;TXFrequency={freq};RXFrequency={freq};'
+            f'ColorCode=1;TalkGroup={tg};TimeSlot=2;'
+        )
+        log.info('Subscribing to TG %d via RPTO', tg)
+        self._send(b'RPTO' + self.cfg.repeater_id_bytes + opts.encode())
 
     def _send_key(self):
         # RPTK = "RPTK" (4) + repeater_id (4) + SHA256_raw_bytes (32) = 40 bytes total
@@ -256,17 +275,13 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
             return
         frame = DMRFrame.from_bytes(data)
 
-        # Track active streams for call start/end detection
-        if frame.frame_type == FrameType.DATA_SYNC:
-            # Voice call header — new stream starting
+        # Register any new stream (handles mid-call joins too)
+        if frame.stream_id not in self._active_streams:
             self._active_streams[frame.stream_id] = {
                 'src_id': frame.src_id,
                 'dst_id': frame.dst_id,
                 'start':  time.time(),
             }
-        elif frame.stream_id not in self._active_streams:
-            # Audio frame without a known stream — ignore
-            return
 
         if self.on_frame:
             self.on_frame(frame)

@@ -105,7 +105,7 @@ class TalkgroupBody(BaseModel):
 async def set_talkgroup(body: TalkgroupBody):
     if not _homebrew:
         raise HTTPException(503, 'Not connected')
-    _homebrew.cfg.talkgroup = body.talkgroup
+    _homebrew.subscribe_tg(body.talkgroup)   # updates cfg + sends RPTO to BM
     await _broadcast({'type': 'talkgroup', 'talkgroup': body.talkgroup})
     return {'ok': True, 'talkgroup': body.talkgroup}
 
@@ -162,12 +162,12 @@ _stream_start: dict[bytes, float] = {}
 def _on_dmr_frame(frame):
     from server.dmr.homebrew import FrameType
 
-    # Track call start/end for last-heard list
-    if frame.frame_type == FrameType.DATA_SYNC:
+    # Track call start/end for last-heard list.
+    # Register on first frame of any type (handles mid-call joins).
+    if frame.stream_id not in _stream_start:
         _stream_start[frame.stream_id] = time.time()
         asyncio.ensure_future(_handle_call_start(frame))
     elif frame.frame_type == FrameType.VOICE_SYNC:
-        # End of voice burst — calculate duration
         start = _stream_start.pop(frame.stream_id, None)
         if start:
             asyncio.ensure_future(_handle_call_end(frame, time.time() - start))
