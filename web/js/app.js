@@ -227,7 +227,7 @@ async function pttStart() {
 
   if (txChan && txChan.readyState === 'open') {
     const src  = getAudioCtx().createMediaStreamSource(mediaStream);
-    const proc = getAudioCtx().createScriptProcessor(160, 1, 1);
+    const proc = getAudioCtx().createScriptProcessor(256, 1, 1);
     proc.onaudioprocess = e => {
       if (!pttActive) { proc.disconnect(); src.disconnect(); return; }
       const f32 = e.inputBuffer.getChannelData(0);
