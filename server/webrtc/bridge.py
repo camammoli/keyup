@@ -1,16 +1,13 @@
 """
 WebRTC ↔ DMR audio bridge.
 
-Browser sends Opus audio via WebRTC DataChannel (PCM after decode).
-We encode to AMBE+2 using mbelib and inject as DMRD frames.
-Incoming DMRD frames are decoded from AMBE+2 to PCM and forwarded
-to the browser via the same DataChannel.
+The server is the WebRTC offerer.  It creates a bidirectional DataChannel
+('audio') before calling createOffer() so SCTP is included in the SDP.
+The browser receives the channel via ondatachannel and uses it for:
+  TX: browser → server: raw PCM (Int16, 8 kHz, 160-sample chunks)
+  RX: server → browser: raw PCM (Int16, 8 kHz, decoded from AMBE+2)
 
-mbelib must be compiled and installed:
-  https://github.com/szechyjs/mbelib
-  pip install mbelib   (Python bindings)
-
-If mbelib is not available, a stub is used and audio is silent.
+mbelib must be available for real audio; otherwise silence is sent.
 """
 
 import asyncio
@@ -19,7 +16,7 @@ import os
 import struct
 import time
 import uuid
-from typing import Optional, Callable
+from typing import Optional
 
 from server.dmr.homebrew import DMRFrame, FrameType, Slot
 
@@ -31,25 +28,20 @@ try:
     log.info('mbelib loaded — AMBE codec available')
 except ImportError:
     _HAVE_MBELIB = False
-    log.warning('mbelib not found — audio will be silent (install mbelib for real audio)')
+    log.warning('mbelib not found — audio will be silent')
 
-SAMPLE_RATE   = 8000    # AMBE operates at 8 kHz
-FRAME_SAMPLES = 160     # 20 ms @ 8 kHz
-AMBE_FRAME_SZ = 9       # bytes per AMBE+2 frame inside a DMR superframe
-DMR_FRAME_MS  = 20      # one DMR voice frame = 20 ms
+SAMPLE_RATE   = 8000
+FRAME_SAMPLES = 160
+AMBE_FRAME_SZ = 9
 
 
 class AudioBridge:
-    """
-    One instance per active WebRTC session.
-    Wires together the aiortc peer connection and the HomeBrew protocol.
-    """
 
     def __init__(self, cfg, homebrew):
         self.cfg       = cfg
         self.homebrew  = homebrew
-        self._pc       = None          # aiortc RTCPeerConnection
-        self._tx_task: Optional[asyncio.Task] = None
+        self._pc       = None
+        self._channel  = None          # RTCDataChannel (bidirectional)
         self._rx_queue: asyncio.Queue = asyncio.Queue(maxsize=200)
         self._stream_id: bytes        = os.urandom(4)
         self._seq: int                = 0
@@ -58,36 +50,44 @@ class AudioBridge:
     # ── Public API ────────────────────────────────────────────────────────────
 
     async def create_offer(self) -> dict:
-        """Create a WebRTC offer and return SDP dict {type, sdp}."""
-        from aiortc import RTCPeerConnection, RTCSessionDescription
-        from aiortc.contrib.media import MediaBlackhole, MediaRecorder
+        from aiortc import RTCPeerConnection
 
         self._pc = RTCPeerConnection()
 
-        @self._pc.on('datachannel')
-        def on_datachannel(channel):
-            log.info('DataChannel opened: %s', channel.label)
+        # Create data channel BEFORE createOffer so SCTP appears in SDP.
+        # Browser receives this channel via ondatachannel event.
+        self._channel = self._pc.createDataChannel(
+            'audio', ordered=False, maxRetransmits=0
+        )
 
-            @channel.on('message')
-            def on_message(msg):
-                if isinstance(msg, bytes):
-                    asyncio.ensure_future(self._handle_pcm_from_browser(msg, channel))
+        @self._channel.on('open')
+        def on_open():
+            log.info('DataChannel open — starting RX loop')
+            asyncio.ensure_future(self._rx_loop())
+
+        @self._channel.on('message')
+        def on_message(msg):
+            if isinstance(msg, bytes):
+                asyncio.ensure_future(self._handle_pcm_from_browser(msg))
 
         offer = await self._pc.createOffer()
         await self._pc.setLocalDescription(offer)
-        return {'type': self._pc.localDescription.type,
-                'sdp':  self._pc.localDescription.sdp}
+        return {
+            'type': self._pc.localDescription.type,
+            'sdp':  self._pc.localDescription.sdp,
+        }
 
     async def set_answer(self, sdp: str, sdp_type: str):
         from aiortc import RTCSessionDescription
-        await self._pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+        await self._pc.setRemoteDescription(
+            RTCSessionDescription(sdp=sdp, type=sdp_type)
+        )
 
     def push_dmr_frame(self, frame: DMRFrame):
-        """Called by HomebrewProtocol.on_frame — queues incoming audio."""
         try:
             self._rx_queue.put_nowait(frame)
         except asyncio.QueueFull:
-            pass  # drop if browser is too slow
+            pass
 
     def set_ptt(self, active: bool):
         self._ptt_active = active
@@ -99,15 +99,13 @@ class AudioBridge:
             log.debug('PTT OFF stream=%s', self._stream_id.hex())
 
     async def close(self):
-        if self._tx_task:
-            self._tx_task.cancel()
         if self._pc:
             await self._pc.close()
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    async def _handle_pcm_from_browser(self, pcm: bytes, channel):
-        """Encode PCM → AMBE+2 → DMRD and transmit."""
+    async def _handle_pcm_from_browser(self, pcm: bytes):
+        """PCM from browser → AMBE+2 encode → transmit as DMRD."""
         if not self._ptt_active:
             return
         ambe = _pcm_to_ambe(pcm)
@@ -127,24 +125,21 @@ class AudioBridge:
         self._seq += 1
         self.homebrew.transmit(frame)
 
-    async def _rx_loop(self, channel):
-        """Decode incoming DMRD frames and push PCM to browser DataChannel."""
+    async def _rx_loop(self):
+        """Incoming DMRD frames → PCM → browser DataChannel."""
         while True:
             frame: DMRFrame = await self._rx_queue.get()
             pcm = _ambe_to_pcm(frame.data)
-            if pcm and channel.readyState == 'open':
-                channel.send(pcm)
+            if pcm and self._channel and self._channel.readyState == 'open':
+                self._channel.send(pcm)
 
 
 # ── Codec helpers ─────────────────────────────────────────────────────────────
 
 def _ambe_to_pcm(dmr_data: bytes) -> Optional[bytes]:
-    """Decode one 33-byte DMR payload to 160-sample PCM (16-bit LE)."""
     if not _HAVE_MBELIB:
-        return bytes(FRAME_SAMPLES * 2)  # silence
+        return bytes(FRAME_SAMPLES * 2)
     try:
-        # DMR payload contains 3 AMBE+2 frames interleaved with sync bits.
-        # mbelib.decode_dmr() handles the de-interleaving internally.
         samples = mbelib.decode_dmr(dmr_data)
         return struct.pack(f'<{len(samples)}h', *samples)
     except Exception as e:
@@ -153,7 +148,6 @@ def _ambe_to_pcm(dmr_data: bytes) -> Optional[bytes]:
 
 
 def _pcm_to_ambe(pcm: bytes) -> Optional[bytes]:
-    """Encode 160-sample PCM (16-bit LE) to 33-byte DMR payload."""
     if not _HAVE_MBELIB:
         return bytes(33)
     try:

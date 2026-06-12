@@ -132,11 +132,30 @@ async function loadStatus() {
 async function setupWebRTC() {
   if (pc) return;
 
-  const offerResp = await fetch('/api/offer', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sdp:'',type:''}) });
-  const offer = await offerResp.json();
+  const r = await fetch('/api/offer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sdp: '', type: '' }),
+  });
+  const offer = await r.json();
+  if (!offer || !offer.sdp) throw new Error('Empty offer from server');
 
   pc = new RTCPeerConnection({ iceServers: [] });
-  txChan = pc.createDataChannel('audio', { ordered: false, maxRetransmits: 0 });
+  pc.oniceconnectionstatechange = () => console.log('[ICE]', pc.iceConnectionState);
+
+  // Server created the data channel — browser receives it via ondatachannel
+  const channelReady = new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error('DataChannel timeout')), 8000);
+    pc.ondatachannel = ({ channel }) => {
+      txChan = channel;
+      channel.onmessage = ({ data }) => playPcm(data);
+      if (channel.readyState === 'open') {
+        clearTimeout(t); resolve();
+      } else {
+        channel.onopen = () => { clearTimeout(t); resolve(); };
+      }
+    };
+  });
 
   await pc.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
   const answer = await pc.createAnswer();
@@ -144,15 +163,11 @@ async function setupWebRTC() {
 
   await fetch('/api/answer', {
     method: 'POST',
-    headers: {'Content-Type':'application/json'},
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sdp: answer.sdp, type: answer.type }),
   });
 
-  pc.oniceconnectionstatechange = () => console.log('[RTC]', pc.iceConnectionState);
-
-  pc.ondatachannel = ({ channel }) => {
-    channel.onmessage = ({ data }) => playPcm(data);
-  };
+  await channelReady;   // wait until SCTP+DTLS handshake completes
 }
 
 // ── Audio playback ─────────────────────────────────────────────────────────
@@ -189,7 +204,20 @@ async function pttStart() {
     }
   }
 
-  if (!pc) await setupWebRTC();
+  if (!pc) {
+    try {
+      await setupWebRTC();
+    } catch (e) {
+      console.error('[PTT] WebRTC setup failed:', e);
+      return;
+    }
+  }
+
+  if (!txChan || txChan.readyState !== 'open') {
+    console.warn('[PTT] DataChannel not open:', txChan?.readyState);
+    pc = null; txChan = null;   // reset so next press retries
+    return;
+  }
 
   pttActive = true;
   pttBtn.classList.add('tx');
