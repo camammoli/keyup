@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -11,9 +11,16 @@
 
     <header>
       <span class="logo">KeyUp</span>
-      <span id="tg-badge" class="tg-badge">TG —</span>
+
+      <!-- TG badge — click to edit -->
+      <span id="tg-badge" class="tg-badge" title="Click to change talkgroup">TG —</span>
+      <input id="tg-input" class="tg-input hidden" type="number" min="1" max="9999999" placeholder="TG #">
+
       <span id="status-dot" class="dot disconnected" title="Disconnected"></span>
       <span id="status-label">Disconnected</span>
+
+      <!-- Theme toggle -->
+      <button id="theme-btn" class="theme-btn" title="Toggle theme" aria-label="Toggle theme">&#9790;</button>
     </header>
 
     <main>

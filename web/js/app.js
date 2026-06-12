@@ -2,8 +2,8 @@
 
 // ── State ──────────────────────────────────────────────────────────────────
 let ws       = null;
-let pc       = null;          // RTCPeerConnection
-let txChan   = null;          // DataChannel (outbound audio)
+let pc       = null;
+let txChan   = null;
 let audioCtx = null;
 let mediaStream = null;
 let connected = false;
@@ -18,6 +18,7 @@ const $ = id => document.getElementById(id);
 const dotEl      = $('status-dot');
 const labelEl    = $('status-label');
 const tgBadge    = $('tg-badge');
+const tgInput    = $('tg-input');
 const pttBtn     = $('ptt-btn');
 const pttHint    = $('ptt-hint');
 const callBanner = $('call-banner');
@@ -25,6 +26,61 @@ const callCs     = $('call-callsign');
 const callName   = $('call-name');
 const callTimer  = $('call-timer');
 const lhBody     = $('lh-body');
+const themeBtn   = $('theme-btn');
+
+// ── Theme ──────────────────────────────────────────────────────────────────
+const THEME_KEY = 'keyup-theme';
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  themeBtn.textContent = theme === 'dark' ? '☀' : '☾';
+  localStorage.setItem(THEME_KEY, theme);
+}
+
+function toggleTheme() {
+  const current = document.documentElement.getAttribute('data-theme') || 'dark';
+  applyTheme(current === 'dark' ? 'light' : 'dark');
+}
+
+applyTheme(localStorage.getItem(THEME_KEY) || 'dark');
+themeBtn.addEventListener('click', toggleTheme);
+
+// ── TG badge — click to edit ───────────────────────────────────────────────
+function setTgBadge(tg) {
+  tgBadge.textContent = tg ? `TG ${tg}` : 'TG —';
+}
+
+function openTgEdit() {
+  tgBadge.classList.add('hidden');
+  tgInput.classList.remove('hidden');
+  const current = tgBadge.textContent.replace('TG ', '').trim();
+  tgInput.value = current === '—' ? '' : current;
+  tgInput.focus();
+  tgInput.select();
+}
+
+async function commitTg() {
+  const val = parseInt(tgInput.value, 10);
+  tgInput.classList.add('hidden');
+  tgBadge.classList.remove('hidden');
+  if (val && val > 0) {
+    try {
+      await fetch('/api/talkgroup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ talkgroup: val }),
+      });
+      setTgBadge(val);
+    } catch (e) { console.warn('TG change failed', e); }
+  }
+}
+
+tgBadge.addEventListener('click', openTgEdit);
+tgInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') { tgInput.blur(); }
+  if (e.key === 'Escape') { tgInput.classList.add('hidden'); tgBadge.classList.remove('hidden'); }
+});
+tgInput.addEventListener('blur', commitTg);
 
 // ── WebSocket ──────────────────────────────────────────────────────────────
 function connectWS() {
@@ -38,13 +94,13 @@ function connectWS() {
   ws.onmessage = ({ data }) => {
     const msg = JSON.parse(data);
     switch (msg.type) {
-      case 'state':      handleState(msg.state);     break;
-      case 'call_start': handleCallStart(msg);       break;
-      case 'call_end':   handleCallEnd(msg);         break;
+      case 'state':      handleState(msg.state);       break;
+      case 'talkgroup':  setTgBadge(msg.talkgroup);    break;
+      case 'call_start': handleCallStart(msg);          break;
+      case 'call_end':   handleCallEnd(msg);            break;
     }
   };
 
-  // Keep-alive ping every 20 s
   setInterval(() => ws && ws.readyState === WebSocket.OPEN && ws.send('ping'), 20000);
 }
 
@@ -65,27 +121,20 @@ async function loadStatus() {
     const r = await fetch('/api/status');
     const d = await r.json();
     handleState(d.state);
+    setTgBadge(d.talkgroup);
     lastHeard = d.last_heard || [];
     renderLastHeard();
-    // Set TG badge from URL or last frame
   } catch (e) { console.warn('status fetch failed', e); }
-}
-
-async function loadConfig() {
-  // We don't expose config via API, but we can read talkgroup from status
-  // For now show a static badge; could extend API later
 }
 
 // ── WebRTC setup ───────────────────────────────────────────────────────────
 async function setupWebRTC() {
   if (pc) return;
 
-  // Get server offer
   const offerResp = await fetch('/api/offer', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({sdp:'',type:''}) });
   const offer = await offerResp.json();
 
-  pc = new RTCPeerConnection({ iceServers: [] });  // no STUN needed (same host)
-
+  pc = new RTCPeerConnection({ iceServers: [] });
   txChan = pc.createDataChannel('audio', { ordered: false, maxRetransmits: 0 });
 
   await pc.setRemoteDescription({ type: offer.type, sdp: offer.sdp });
@@ -100,7 +149,6 @@ async function setupWebRTC() {
 
   pc.oniceconnectionstatechange = () => console.log('[RTC]', pc.iceConnectionState);
 
-  // Incoming audio from server
   pc.ondatachannel = ({ channel }) => {
     channel.onmessage = ({ data }) => playPcm(data);
   };
@@ -129,7 +177,6 @@ function playPcm(buffer) {
 async function pttStart() {
   if (!connected || pttActive) return;
 
-  // Resume AudioContext on first gesture
   getAudioCtx().resume();
 
   if (!mediaStream) {
@@ -149,7 +196,6 @@ async function pttStart() {
 
   await fetch('/api/ptt', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ active: true }) });
 
-  // Capture mic and send PCM chunks via DataChannel
   if (txChan && txChan.readyState === 'open') {
     const src  = getAudioCtx().createMediaStreamSource(mediaStream);
     const proc = getAudioCtx().createScriptProcessor(160, 1, 1);
@@ -180,9 +226,8 @@ pttBtn.addEventListener('mouseleave', pttStop);
 pttBtn.addEventListener('touchstart', e => { e.preventDefault(); pttStart(); }, { passive: false });
 pttBtn.addEventListener('touchend',   e => { e.preventDefault(); pttStop();  }, { passive: false });
 
-// Spacebar
-document.addEventListener('keydown', e => { if (e.code === 'Space' && !e.repeat) { e.preventDefault(); pttStart(); } });
-document.addEventListener('keyup',   e => { if (e.code === 'Space') { e.preventDefault(); pttStop(); } });
+document.addEventListener('keydown', e => { if (e.code === 'Space' && !e.repeat && document.activeElement !== tgInput) { e.preventDefault(); pttStart(); } });
+document.addEventListener('keyup',   e => { if (e.code === 'Space' && document.activeElement !== tgInput) { e.preventDefault(); pttStop(); } });
 
 // ── Incoming call display ──────────────────────────────────────────────────
 function handleCallStart(msg) {
@@ -202,7 +247,6 @@ function handleCallEnd(msg) {
   callBanner.classList.add('hidden');
   callTimer.textContent = '';
 
-  // Update last heard
   lastHeard.unshift({
     ts:       msg.ts,
     src_id:   msg.src_id,

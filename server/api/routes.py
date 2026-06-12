@@ -57,6 +57,7 @@ async def index():
 async def status():
     return {
         'state':       _homebrew.state if _homebrew else HomebrewState.DISCONNECTED,
+        'talkgroup':   _homebrew.cfg.talkgroup if _homebrew else 0,
         'last_heard':  _last_heard[:10],
         'active_calls': [
             {'stream_id': sid.hex(), **info}
@@ -94,6 +95,19 @@ async def webrtc_answer(body: AnswerBody):
         raise HTTPException(503, 'Bridge not ready')
     await _bridge.set_answer(body.sdp, body.type)
     return {'ok': True}
+
+
+class TalkgroupBody(BaseModel):
+    talkgroup: int
+
+
+@router.post('/api/talkgroup')
+async def set_talkgroup(body: TalkgroupBody):
+    if not _homebrew:
+        raise HTTPException(503, 'Not connected')
+    _homebrew.cfg.talkgroup = body.talkgroup
+    await _broadcast({'type': 'talkgroup', 'talkgroup': body.talkgroup})
+    return {'ok': True, 'talkgroup': body.talkgroup}
 
 
 class PttBody(BaseModel):
