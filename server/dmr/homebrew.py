@@ -278,6 +278,7 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
     # ── Ping / keepalive ──────────────────────────────────────────────────────
 
     async def _ping_loop(self):
+        ticks = 0
         while self.state == HomebrewState.CONNECTED:
             await asyncio.sleep(PING_INTERVAL)
             self._send(b'RPTPING' + self.cfg.repeater_id_bytes)
@@ -288,6 +289,9 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
                 await self.disconnect()
                 await self.connect()
                 return
+            ticks += 1
+            if ticks % (600 // PING_INTERVAL) == 0:   # every 10 minutes
+                asyncio.ensure_future(self._activate_tg(self.cfg.talkgroup))
 
     def _handle_pong(self, data: bytes):
         self._missed_pings = 0
