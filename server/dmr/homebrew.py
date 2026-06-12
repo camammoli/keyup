@@ -208,6 +208,7 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
             self._set_state(HomebrewState.CONNECTED)
             self._ping_task = asyncio.ensure_future(self._ping_loop())
             self._send_rpto()
+            asyncio.ensure_future(self._activate_tg(self.cfg.talkgroup))
 
     def subscribe_tg(self, talkgroup: int):
         """Re-subscribe to a new talkgroup without reconnecting."""
