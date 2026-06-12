@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KeyUp — DMR Web Client</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+</head>
+<body>
+  <div id="app">
+
+    <header>
+      <span class="logo">KeyUp</span>
+      <span id="tg-badge" class="tg-badge">TG —</span>
+      <span id="status-dot" class="dot disconnected" title="Disconnected"></span>
+      <span id="status-label">Disconnected</span>
+    </header>
+
+    <main>
+
+      <!-- PTT button -->
+      <section class="ptt-area">
+        <button id="ptt-btn" class="ptt" disabled>
+          <span class="ptt-icon">&#x1F399;</span>
+          <span class="ptt-label">Hold to Talk</span>
+        </button>
+        <p id="ptt-hint" class="hint">Connect to BrandMeister to transmit</p>
+      </section>
+
+      <!-- Active call banner -->
+      <div id="call-banner" class="call-banner hidden">
+        <span id="call-callsign"></span>
+        <span id="call-name"></span>
+        <span id="call-timer"></span>
+      </div>
+
+      <!-- Last heard -->
+      <section class="last-heard">
+        <h2>Last Heard</h2>
+        <table id="lh-table">
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Callsign</th>
+              <th>Name</th>
+              <th>TG</th>
+              <th>Dur.</th>
+            </tr>
+          </thead>
+          <tbody id="lh-body">
+            <tr><td colspan="5" class="empty">No contacts yet</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+    </main>
+
+    <footer>
+      KeyUp v1.0 &mdash; BrandMeister Homebrew &mdash;
+      <a href="https://github.com/camammoli/keyup" target="_blank">GitHub</a>
+    </footer>
+
+  </div>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

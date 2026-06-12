@@ -1,0 +1,8 @@
+callsign: CALLSIGN
+dmr_id: 1234567
+essid: 1
+bm_password: your_hotspot_password
+bm_server: bm2201.brandmeister.network
+bm_port: 62031
+talkgroup: 91
+web_port: 8080
