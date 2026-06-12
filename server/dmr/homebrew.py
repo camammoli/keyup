@@ -218,23 +218,25 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
 
     async def _activate_tg(self, talkgroup: int):
         """Send a minimal silent call to dynamically link the TG on BrandMeister.
-        BM links the TG when it sees a transmission from us, even if RPTO is ignored."""
-        import os as _os
-        stream_id = _os.urandom(4)
-        # flags: group call (0<<7) | DATA_SYNC (2<<4) | TS2 (1) = 0x21
-        flags = (0 << 7) | (FrameType.DATA_SYNC << 4) | int(Slot.TS2)
-        header = (
-            b'DMRD' +
-            bytes([0]) +                            # seq=0
-            self.cfg.repeater_id.to_bytes(3, 'big') +  # src = our ID
-            talkgroup.to_bytes(3, 'big') +          # dst = TG
-            self.cfg.repeater_id_bytes +            # rpt_id
-            bytes([flags]) +
-            stream_id +
-            bytes(33)                               # silent payload
-        )
-        self._send(header)
-        log.info('TG %d activation frame sent', talkgroup)
+        BM links the TG when it sees a transmission, even if RPTO is ignored.
+        src_id must be the user's DMR ID (not the repeater ID) or BM ignores it."""
+        stream_id = os.urandom(4)
+        src_id = self.cfg.dmr_id          # user's 7-digit DMR ID
+        rpt    = self.cfg.repeater_id_bytes
+
+        def _frame(ftype: FrameType, seq: int) -> bytes:
+            flags = (0 << 7) | (int(ftype) << 4) | int(Slot.TS2)
+            return (
+                b'DMRD' + bytes([seq]) +
+                src_id.to_bytes(3, 'big') +
+                talkgroup.to_bytes(3, 'big') +
+                rpt + bytes([flags]) + stream_id + bytes(33)
+            )
+
+        self._send(_frame(FrameType.DATA_SYNC, 0))   # voice call header
+        await asyncio.sleep(0.060)
+        self._send(_frame(FrameType.VOICE_SYNC, 1))  # call terminator
+        log.info('TG %d activation complete (src_id=%d)', talkgroup, src_id)
 
     def _send_rpto(self):
         # RPTO tells BrandMeister which TG to push traffic for.
