@@ -214,6 +214,27 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
         self.cfg.talkgroup = talkgroup
         if self.state == HomebrewState.CONNECTED:
             self._send_rpto()
+            asyncio.ensure_future(self._activate_tg(talkgroup))
+
+    async def _activate_tg(self, talkgroup: int):
+        """Send a minimal silent call to dynamically link the TG on BrandMeister.
+        BM links the TG when it sees a transmission from us, even if RPTO is ignored."""
+        import os as _os
+        stream_id = _os.urandom(4)
+        # flags: group call (0<<7) | DATA_SYNC (2<<4) | TS2 (1) = 0x21
+        flags = (0 << 7) | (FrameType.DATA_SYNC << 4) | int(Slot.TS2)
+        header = (
+            b'DMRD' +
+            bytes([0]) +                            # seq=0
+            self.cfg.repeater_id.to_bytes(3, 'big') +  # src = our ID
+            talkgroup.to_bytes(3, 'big') +          # dst = TG
+            self.cfg.repeater_id_bytes +            # rpt_id
+            bytes([flags]) +
+            stream_id +
+            bytes(33)                               # silent payload
+        )
+        self._send(header)
+        log.info('TG %d activation frame sent', talkgroup)
 
     def _send_rpto(self):
         # RPTO tells BrandMeister which TG to push traffic for.
@@ -282,6 +303,8 @@ class HomebrewProtocol(asyncio.DatagramProtocol):
                 'dst_id': frame.dst_id,
                 'start':  time.time(),
             }
+            log.info('DMRD stream start: src=%d dst=%d type=%s',
+                     frame.src_id, frame.dst_id, frame.frame_type.name)
 
         if self.on_frame:
             self.on_frame(frame)
