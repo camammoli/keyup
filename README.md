@@ -1,5 +1,7 @@
 # KeyUp
 
+[![Archivado en Software Heritage](https://archive.softwareheritage.org/badge/origin/https://github.com/camammoli/keyup/)](https://archive.softwareheritage.org/browse/origin/?origin_url=https://github.com/camammoli/keyup)
+
 **Web-based DMR client. Install Docker, open browser, transmit.**
 
 KeyUp connects directly to BrandMeister via the Homebrew protocol — no Pi-Star, no hardware hotspot, no app to install. A modern browser is all you need.
